@@ -832,7 +832,8 @@ static void handle_media(
 json oaicompat_chat_params_parse(
     json & body, /* openai api json semantics */
     const oaicompat_parser_options & opt,
-    std::vector<raw_buffer> & out_files)
+    std::vector<raw_buffer> & out_files,
+    std::vector<external_embedding> * out_embeddings)
 {
     json llama_params;
 
@@ -915,7 +916,70 @@ json oaicompat_chat_params_parse(
                 }
 
                 json image_url = json_value(p, "image_url", json::object());
-                handle_media(out_files, image_url, opt.media_path);
+                std::string url = json_value(image_url, "url", std::string());
+                
+                // Check for embedding:// URL scheme (distributed inference)
+                if (url.rfind("embedding://", 0) == 0) {
+                    // Parse pre-computed embeddings from external vision encoder server
+                    if (!out_embeddings) {
+                        throw std::runtime_error("embedding:// URLs are not supported in this context");
+                    }
+                    
+                    if (!image_url.contains("embedding") || !image_url.contains("shape")) {
+                        throw std::invalid_argument("embedding:// URL requires 'embedding' and 'shape' fields");
+                    }
+                    
+                    auto shape_json = image_url["shape"];
+                    
+                    if (!shape_json.is_array() || shape_json.size() != 2) {
+                        throw std::invalid_argument("Invalid shape format");
+                    }
+                    
+                    external_embedding ext_embd;
+                    ext_embd.n_tokens = shape_json[0].get<size_t>();
+                    ext_embd.embd_dim = shape_json[1].get<size_t>();
+                    
+                    // Parse embedding data (supports both base64 string and JSON array)
+                    auto embd_json = image_url["embedding"];
+                    if (embd_json.is_string()) {
+                        // Base64 encoded float32 binary data
+                        std::string base64_data = embd_json.get<std::string>();
+                        auto decoded = base64_decode(base64_data);
+                        
+                        size_t expected_size = ext_embd.n_tokens * ext_embd.embd_dim * sizeof(float);
+                        if (decoded.size() != expected_size) {
+                            throw std::invalid_argument("embedding size mismatch: got " + 
+                                std::to_string(decoded.size()) + " bytes, expected " + 
+                                std::to_string(expected_size));
+                        }
+                        
+                        ext_embd.data.resize(ext_embd.n_tokens * ext_embd.embd_dim);
+                        std::memcpy(ext_embd.data.data(), decoded.data(), decoded.size());
+                        SRV_INF("decoded base64 embedding: %zu bytes\n", decoded.size());
+                    } else if (embd_json.is_array()) {
+                        // JSON array of floats (less efficient, for debugging)
+                        ext_embd.data = embd_json.get<std::vector<float>>();
+                    } else {
+                        throw std::invalid_argument("embedding must be base64 string or float array");
+                    }
+                    
+                    // Parse M-RoPE info if present
+                    if (image_url.contains("mrope")) {
+                        auto mrope_json = image_url["mrope"];
+                        ext_embd.nx = json_value(mrope_json, "nx", 0);
+                        ext_embd.ny = json_value(mrope_json, "ny", 0);
+                    } else {
+                        ext_embd.nx = 0;
+                        ext_embd.ny = 0;
+                    }
+                    
+                    SRV_INF("received external embedding: n_tokens=%zu, embd_dim=%zu, nx=%d, ny=%d\n",
+                            ext_embd.n_tokens, ext_embd.embd_dim, ext_embd.nx, ext_embd.ny);
+                    out_embeddings->push_back(std::move(ext_embd));
+                } else {
+                    // Normal image processing (existing logic)
+                    handle_media(out_files, image_url, opt.media_path);
+                }
 
                 // replace this chunk with a marker
                 p["type"] = "text";

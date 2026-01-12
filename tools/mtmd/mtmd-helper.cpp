@@ -350,18 +350,28 @@ int32_t mtmd_helper_eval_chunk_single(mtmd_context * ctx,
         const char * name = chunk_type == MTMD_INPUT_CHUNK_TYPE_IMAGE ? "image" : "audio";
         int64_t t0 = ggml_time_ms();
 
-        LOG_INF("encoding %s slice...\n", name);
+        float * embd = nullptr;
+        
+        // Check if this chunk has pre-computed embeddings from external vision encoder
+        if (mtmd_input_chunk_has_external_embd(chunk)) {
+            LOG_INF("using external %s embeddings (distributed inference)...\n", name);
+            embd = const_cast<float*>(mtmd_input_chunk_get_external_embd(chunk));
+        } else {
+            // Normal path: encode the chunk
+            LOG_INF("encoding %s slice...\n", name);
 
-        ret = mtmd_encode_chunk(ctx, chunk);
-        if (ret != 0) {
-            LOG_ERR("failed to encode %s slice\n", name);
-            llama_batch_free(text_batch);
-            return ret;
+            ret = mtmd_encode_chunk(ctx, chunk);
+            if (ret != 0) {
+                LOG_ERR("failed to encode %s slice\n", name);
+                llama_batch_free(text_batch);
+                return ret;
+            }
+
+            LOG_INF("%s slice encoded in %" PRId64 " ms\n", name, ggml_time_ms() - t0);
+
+            embd = mtmd_get_output_embd(ctx);
         }
-
-        LOG_INF("%s slice encoded in %" PRId64 " ms\n", name, ggml_time_ms() - t0);
-
-        float * embd = mtmd_get_output_embd(ctx);
+        
         ret = mtmd_helper_decode_image_chunk(ctx, lctx, chunk, embd, n_past, seq_id, n_batch, new_n_past);
         if (ret != 0) {
             LOG_ERR("failed to decode %s\n", name);

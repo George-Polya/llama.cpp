@@ -31,6 +31,15 @@ using json = nlohmann::ordered_json;
 
 using raw_buffer = std::vector<uint8_t>;
 
+// Structure to hold pre-computed embeddings from external vision encoder server
+struct external_embedding {
+    std::vector<float> data;
+    size_t n_tokens;
+    size_t embd_dim;
+    int nx;  // M-RoPE spatial width (0 if not using M-RoPE)
+    int ny;  // M-RoPE spatial height (0 if not using M-RoPE)
+};
+
 template <typename T>
 static T json_value(const json & body, const std::string & key, const T & default_value) {
     // Fallback null to default value
@@ -293,7 +302,8 @@ struct oaicompat_parser_options {
 json oaicompat_chat_params_parse(
     json & body, /* openai api json semantics */
     const oaicompat_parser_options & opt,
-    std::vector<raw_buffer> & out_files);
+    std::vector<raw_buffer> & out_files,
+    std::vector<external_embedding> * out_embeddings = nullptr);
 
 // convert Anthropic Messages API format to OpenAI Chat Completions API format
 json convert_anthropic_to_oai(const json & body);

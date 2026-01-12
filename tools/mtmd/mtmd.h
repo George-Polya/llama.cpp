@@ -169,11 +169,28 @@ MTMD_API const char *               mtmd_input_chunk_get_id          (const mtmd
 // number of temporal positions (equals to max(t,h,w) for M-RoPE; equals to n_tokens otherwise)
 MTMD_API llama_pos                  mtmd_input_chunk_get_n_pos       (const mtmd_input_chunk * chunk);
 
+// For distributed inference: check if chunk has pre-computed external embeddings
+MTMD_API bool                       mtmd_input_chunk_has_external_embd(const mtmd_input_chunk * chunk);
+// Get pointer to external embeddings data (returns nullptr if not available)
+MTMD_API const float *              mtmd_input_chunk_get_external_embd(const mtmd_input_chunk * chunk);
+
 // in case you want to use custom logic to handle the chunk (i.e. KV cache management)
 // you can move the chunk ownership to your own code by copying it
 // remember to free the chunk when you are done with it
 MTMD_API mtmd_input_chunk * mtmd_input_chunk_copy(const mtmd_input_chunk * chunk);
 MTMD_API void               mtmd_input_chunk_free(mtmd_input_chunk * chunk);
+
+// Create an input chunk from pre-computed embeddings (for distributed inference)
+// This allows injecting embeddings from an external vision encoder server
+// The embeddings are NOT copied, caller must ensure the data remains valid
+// For M-RoPE models (e.g., Qwen3-VL), nx and ny specify the spatial dimensions
+// Set nx=ny=0 for non-M-RoPE models
+MTMD_API mtmd_input_chunk * mtmd_input_chunk_init_from_embedding(
+    const float * embedding,
+    size_t n_tokens,
+    size_t embd_dim,
+    int nx,      // M-RoPE spatial width (0 if not using M-RoPE)
+    int ny);     // M-RoPE spatial height (0 if not using M-RoPE)
 
 
 // mtmd_image_tokens

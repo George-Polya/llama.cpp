@@ -71,6 +71,10 @@ struct mtmd_input_chunk {
     std::vector<llama_token> tokens_text;
     mtmd_image_tokens_ptr tokens_image;
     mtmd_audio_tokens_ptr tokens_audio;
+    
+    // For distributed inference: pre-computed embeddings from external vision encoder
+    // If not empty, mtmd_encode_chunk should be skipped and this data used directly
+    std::vector<float> external_embd;
 };
 
 struct mtmd_input_chunks {
@@ -1033,6 +1037,17 @@ const char * mtmd_input_chunk_get_id(const mtmd_input_chunk * chunk) {
     return nullptr;
 }
 
+bool mtmd_input_chunk_has_external_embd(const mtmd_input_chunk * chunk) {
+    return chunk && !chunk->external_embd.empty();
+}
+
+const float * mtmd_input_chunk_get_external_embd(const mtmd_input_chunk * chunk) {
+    if (chunk && !chunk->external_embd.empty()) {
+        return chunk->external_embd.data();
+    }
+    return nullptr;
+}
+
 mtmd_input_chunk * mtmd_input_chunk_copy(const mtmd_input_chunk * chunk) {
     mtmd_input_chunk * copy = new mtmd_input_chunk{
         chunk->type,
@@ -1057,6 +1072,58 @@ void mtmd_input_chunk_free(mtmd_input_chunk * chunk) {
     if (chunk) {
         delete chunk;
     }
+}
+
+// Create an input chunk from pre-computed embeddings
+// This is used for distributed inference where embeddings come from external vision encoder server
+mtmd_input_chunk * mtmd_input_chunk_init_from_embedding(
+        const float * embedding,
+        size_t n_tokens,
+        size_t embd_dim,
+        int nx,
+        int ny) {
+    if (!embedding || n_tokens == 0 || embd_dim == 0) {
+        return nullptr;
+    }
+
+    // Create image tokens structure
+    mtmd_image_tokens_ptr image_tokens(new mtmd_image_tokens);
+    
+    // Set dimensions for M-RoPE support
+    if (nx > 0 && ny > 0) {
+        image_tokens->nx = nx;
+        image_tokens->ny = ny;
+        image_tokens->use_mrope_pos = true;
+    } else {
+        image_tokens->nx = n_tokens;
+        image_tokens->ny = 1;
+        image_tokens->use_mrope_pos = false;
+    }
+    
+    // Create a minimal batch_f32 for compatibility
+    // We don't need actual image data since we're using pre-computed embeddings
+    clip_image_f32_ptr img_f32(clip_image_f32_init());
+    img_f32->nx = 1;  // minimal placeholder
+    img_f32->ny = 1;
+    img_f32->buf.resize(1);
+    image_tokens->batch_f32.entries.push_back(std::move(img_f32));
+    image_tokens->id = "external_embedding";
+
+    // Create the chunk with external embeddings
+    mtmd_input_chunk * chunk = new mtmd_input_chunk{
+        MTMD_INPUT_CHUNK_TYPE_IMAGE,
+        {},  // no text tokens
+        std::move(image_tokens),
+        nullptr,  // no audio tokens
+        {},  // external_embd - will be filled below
+    };
+    
+    // Store the pre-computed embeddings in external_embd
+    // This will be used directly by mtmd_helper_eval_chunk_single, skipping mtmd_encode_chunk
+    chunk->external_embd.resize(n_tokens * embd_dim);
+    std::memcpy(chunk->external_embd.data(), embedding, n_tokens * embd_dim * sizeof(float));
+    
+    return chunk;
 }
 
 // mtmd_image_tokens
